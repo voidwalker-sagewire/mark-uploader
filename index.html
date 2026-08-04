@@ -109,8 +109,77 @@
   .dot.ok { background: var(--green); }
   .dot.warn { background: var(--orange); }
   .dot.err { background: var(--red); }
-  #log { display: none; }
-  #log.show { display: block; }
+  .tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 16px;
+  }
+  .tab {
+    flex: 1;
+    text-align: center;
+    padding: 10px;
+    border-radius: 8px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    color: var(--dim);
+    font-size: 0.85rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .tab.active {
+    background: var(--green);
+    color: #05170c;
+    border-color: var(--green);
+  }
+  .view { display: none; }
+  .view.active { display: block; }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+    margin-bottom: 12px;
+  }
+  .card-meta {
+    display: flex;
+    justify-content: space-between;
+    color: var(--dim);
+    font-size: 0.75rem;
+    margin-bottom: 8px;
+  }
+  .card-summary {
+    font-size: 0.9rem;
+    line-height: 1.4;
+    margin-bottom: 10px;
+  }
+  .card-empty {
+    color: var(--orange);
+    font-size: 0.8rem;
+    font-style: italic;
+  }
+  .card-id {
+    font-family: monospace;
+    font-size: 0.7rem;
+    color: var(--dim);
+    cursor: pointer;
+  }
+  .refresh-btn {
+    width: 100%;
+    padding: 12px;
+    background: #1e1e1e;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 0.9rem;
+    cursor: pointer;
+    margin-bottom: 14px;
+  }
+  .loading-text {
+    color: var(--dim);
+    text-align: center;
+    padding: 20px;
+    font-size: 0.85rem;
+  }
   .result-box {
     background: #1e1e1e;
     border-radius: 8px;
@@ -129,6 +198,13 @@
 
 <h1>M.A.R.K. Uploader</h1>
 <div class="subtitle">Pick a video, send it straight to the content engine.</div>
+
+<div class="tabs">
+  <div class="tab active" id="tabUpload">Upload</div>
+  <div class="tab" id="tabLibrary">Library</div>
+</div>
+
+<div class="view active" id="viewUpload">
 
 <div class="panel">
   <label for="endpoint">API Endpoint</label>
@@ -150,6 +226,13 @@
   <div class="status-line"><div class="dot" id="dotSheet"></div><span id="txtSheet">Waiting on Sheets write...</span></div>
   <div class="result-box" id="resultBox"></div>
 </div>
+
+</div><!-- /viewUpload -->
+
+<div class="view" id="viewLibrary">
+  <button class="refresh-btn" id="refreshBtn">🔄 Refresh Library</button>
+  <div id="libraryList"><div class="loading-text">Tap Refresh to load your recent uploads.</div></div>
+</div><!-- /viewLibrary -->
 
 <script>
   const pickerBtn = document.getElementById('pickerBtn');
@@ -202,25 +285,51 @@
     const recordId = recordIdInput.value.trim();
     if (recordId) formData.append('record_id', recordId);
 
+    // --- DEBUG LOGGING (added 2026-08-04, patched by Claude) ---
+    // "Failed to fetch" alone doesn't say WHY -- CORS block, DNS failure,
+    // and a proxy timing out the connection all produce that exact same
+    // message with zero extra detail. The two things that actually
+    // distinguish them are (1) elapsed time before failure, and (2) the
+    // real error object's .name/.message, which the old catch block threw
+    // away. A live ticking timer + an AbortController with a generous
+    // ceiling gives us both: near-instant failure = CORS/DNS/cert issue,
+    // long wait then abort = proxy or server timing the request out.
+    const startTime = Date.now();
+    let elapsedTimer = null;
+    const updateElapsed = () => {
+      const secs = ((Date.now() - startTime) / 1000).toFixed(1);
+      document.getElementById('txtUpload').textContent = `Uploading video... (${secs}s elapsed)`;
+    };
+    elapsedTimer = setInterval(updateElapsed, 500);
+
+    const controller = new AbortController();
+    const timeoutMs = 120000; // 2 minutes -- generous ceiling for CPU-based Whisper transcription
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
     try {
       setDot('dotProcess', 'warn');
       document.getElementById('txtProcess').textContent = 'Transcribing + generating content (this can take a bit)...';
 
       const res = await fetch(endpoint, {
         method: 'POST',
-        body: formData
+        body: formData,
+        signal: controller.signal
       });
 
+      clearInterval(elapsedTimer);
+      clearTimeout(timeoutId);
+      const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
+
       setDot('dotUpload', 'ok');
-      document.getElementById('txtUpload').textContent = 'Video uploaded';
+      document.getElementById('txtUpload').textContent = `Video uploaded (${elapsedSec}s)`;
 
       const contentType = res.headers.get('content-type') || '';
       if (!contentType.includes('application/json')) {
         // This is exactly the "<html>...not valid JSON" failure mode
         const raw = await res.text();
         setDot('dotProcess', 'err');
-        document.getElementById('txtProcess').textContent = 'Server did not return JSON (proxy/error page?)';
-        resultBox.textContent = raw.slice(0, 500);
+        document.getElementById('txtProcess').textContent = `Server did not return JSON (status ${res.status})`;
+        resultBox.textContent = `HTTP ${res.status} ${res.statusText}\n\n${raw.slice(0, 500)}`;
         uploadBtn.disabled = false;
         uploadBtn.textContent = 'Try again';
         return;
@@ -246,12 +355,126 @@
       uploadBtn.textContent = 'Send another';
 
     } catch (err) {
+      clearInterval(elapsedTimer);
+      clearTimeout(timeoutId);
+      const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
+
       setDot('dotUpload', 'err');
-      document.getElementById('txtUpload').textContent = 'Request failed: ' + err.message;
+
+      if (err.name === 'AbortError') {
+        // We hit our own 2-minute ceiling -- the request never got a
+        // response at all. This is the timeout signature: long wait,
+        // then nothing. Points at a proxy/server timeout, not CORS.
+        document.getElementById('txtUpload').textContent = `Timed out after ${elapsedSec}s -- no response from server`;
+        resultBox.textContent = `TIMEOUT after ${elapsedSec}s.\n\nThe request was sent but never got a response before hitting the ${timeoutMs/1000}s client-side limit. This usually means a reverse proxy (Traefik, Cloudflare, etc.) in front of the API is killing the connection before Whisper transcription finishes -- not a CORS or code problem.`;
+      } else {
+        // Fast failure (check the elapsed seconds above/below) usually
+        // means CORS, DNS, a bad URL, or a TLS/cert problem -- something
+        // that fails before any real network round-trip happens.
+        document.getElementById('txtUpload').textContent = `Failed after ${elapsedSec}s: ${err.name}`;
+        resultBox.textContent = `ERROR after ${elapsedSec}s\n\nName: ${err.name}\nMessage: ${err.message}\n\nIf this failed in well under a second, it's almost always CORS, a DNS/typo issue in the endpoint URL, or a TLS/certificate problem -- not a timeout. If you're testing this on GitHub Pages (https) make sure the API endpoint above also starts with https:// exactly.`;
+      }
+
       uploadBtn.disabled = false;
       uploadBtn.textContent = 'Try again';
     }
   });
+
+  // --- LIBRARY VIEW (added 2026-08-04, patched by Claude) ---
+  // WHY THIS EXISTS: the uploader was write-only -- no way to see what
+  // MARK has actually produced without opening the Google Sheet directly.
+  // This calls the new GET /recent-content endpoint (added the same
+  // session) and renders real cards: timestamp, summary, and whether that
+  // row's content actually landed (has_content) so a blank/failed row is
+  // visible at a glance instead of silently missing.
+  const tabUpload = document.getElementById('tabUpload');
+  const tabLibrary = document.getElementById('tabLibrary');
+  const viewUpload = document.getElementById('viewUpload');
+  const viewLibrary = document.getElementById('viewLibrary');
+  const refreshBtn = document.getElementById('refreshBtn');
+  const libraryList = document.getElementById('libraryList');
+
+  tabUpload.addEventListener('click', () => {
+    tabUpload.classList.add('active');
+    tabLibrary.classList.remove('active');
+    viewUpload.classList.add('active');
+    viewLibrary.classList.remove('active');
+  });
+
+  tabLibrary.addEventListener('click', () => {
+    tabLibrary.classList.add('active');
+    tabUpload.classList.remove('active');
+    viewLibrary.classList.add('active');
+    viewUpload.classList.remove('active');
+    if (libraryList.dataset.loaded !== 'true') {
+      loadLibrary();
+    }
+  });
+
+  refreshBtn.addEventListener('click', loadLibrary);
+
+  function deriveRecentContentUrl() {
+    // /recent-content lives on the same host as /process-video -- derive
+    // it from whatever's in the endpoint field so there's only one URL to
+    // configure, not two.
+    const base = endpointInput.value.trim().replace(/\/process-video\/?$/, '');
+    return base + '/recent-content?limit=20';
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str || '';
+    return div.innerHTML;
+  }
+
+  async function loadLibrary() {
+    libraryList.innerHTML = '<div class="loading-text">Loading...</div>';
+    refreshBtn.disabled = true;
+    refreshBtn.textContent = 'Loading...';
+
+    try {
+      const res = await fetch(deriveRecentContentUrl());
+      if (!res.ok) {
+        libraryList.innerHTML = `<div class="loading-text">Failed to load (HTTP ${res.status}). Is /recent-content deployed yet?</div>`;
+        refreshBtn.disabled = false;
+        refreshBtn.textContent = '🔄 Refresh Library';
+        return;
+      }
+      const data = await res.json();
+      libraryList.dataset.loaded = 'true';
+
+      if (!data.items || data.items.length === 0) {
+        libraryList.innerHTML = '<div class="loading-text">Nothing here yet.</div>';
+      } else {
+        libraryList.innerHTML = data.items.map(item => `
+          <div class="card">
+            <div class="card-meta">
+              <span>${escapeHtml(item.timestamp) || 'no timestamp'}</span>
+              <span class="card-id" title="Tap to copy ID">${escapeHtml(item.id)}</span>
+            </div>
+            ${item.has_content
+              ? `<div class="card-summary">${escapeHtml(item.summary)}</div>`
+              : `<div class="card-empty">⚠ No content generated for this row yet</div>`
+            }
+          </div>
+        `).join('');
+
+        // Tap an ID to copy it into the Record ID field on the Upload tab
+        // -- handy for re-running/updating a specific row.
+        libraryList.querySelectorAll('.card-id').forEach(el => {
+          el.addEventListener('click', () => {
+            recordIdInput.value = el.textContent;
+            tabUpload.click();
+          });
+        });
+      }
+    } catch (err) {
+      libraryList.innerHTML = `<div class="loading-text">Failed to load: ${escapeHtml(err.message)}</div>`;
+    }
+
+    refreshBtn.disabled = false;
+    refreshBtn.textContent = '🔄 Refresh Library';
+  }
 </script>
 
 </body>
