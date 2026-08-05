@@ -165,6 +165,64 @@
     color: var(--dim);
     cursor: pointer;
   }
+  .card-expand-hint {
+    color: var(--dim);
+    font-size: 0.75rem;
+    text-align: center;
+    padding-top: 4px;
+    border-top: 1px solid var(--border);
+    margin-top: 4px;
+  }
+  .field-block {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--border);
+  }
+  .field-label {
+    font-size: 0.7rem;
+    color: var(--dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 6px;
+  }
+  .field-text {
+    font-size: 0.85rem;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    margin-bottom: 8px;
+  }
+  .field-actions {
+    display: flex;
+    gap: 8px;
+  }
+  .field-btn {
+    flex: 1;
+    padding: 8px;
+    background: #1e1e1e;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 0.75rem;
+    text-align: center;
+    cursor: pointer;
+  }
+  .field-btn.copied {
+    background: var(--green);
+    color: #05170c;
+    border-color: var(--green);
+  }
+  .reuse-id-btn {
+    display: block;
+    text-align: center;
+    padding: 8px;
+    margin-top: 10px;
+    background: #1e1e1e;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 0.75rem;
+    color: var(--dim);
+    cursor: pointer;
+  }
   .refresh-btn {
     width: 100%;
     padding: 12px;
@@ -448,25 +506,63 @@
       if (!data.items || data.items.length === 0) {
         libraryList.innerHTML = '<div class="loading-text">Nothing here yet.</div>';
       } else {
-        libraryList.innerHTML = data.items.map(item => `
+        // --- EXPANDABLE CARDS + COPY/SHARE (added 2026-08-04, patched by Claude) ---
+        // WHY THIS EXISTS: the first version of the Library only showed a
+        // summary preview -- there was no way to actually get the full
+        // X_Post or Newsletter text out to post it anywhere. Each card now
+        // stores its full content in data-* attributes (escaped, not
+        // re-fetched) and expands on tap to show all three fields, each
+        // with its own Copy button. Where the phone supports it
+        // (navigator.share -- most Android browsers do), a Share button
+        // also appears, handing the text straight to the native Android
+        // share sheet (X app, Notes, Messages, whatever's installed)
+        // instead of a copy-then-paste round trip.
+        window._markLibraryItems = data.items;
+        libraryList.innerHTML = data.items.map((item, idx) => `
           <div class="card">
             <div class="card-meta">
               <span>${escapeHtml(item.timestamp) || 'no timestamp'}</span>
-              <span class="card-id" title="Tap to copy ID">${escapeHtml(item.id)}</span>
+              <span class="card-id" data-action="copy-id" data-idx="${idx}" title="Tap to reuse this ID">${escapeHtml(item.id)}</span>
             </div>
             ${item.has_content
-              ? `<div class="card-summary">${escapeHtml(item.summary)}</div>`
+              ? `<div class="card-summary" data-action="toggle" data-idx="${idx}">${escapeHtml(item.summary)}</div>
+                 <div class="card-expand-hint" data-action="toggle" data-idx="${idx}">Tap to expand ▾</div>
+                 <div class="field-groups" id="fields-${idx}" style="display:none;"></div>`
               : `<div class="card-empty">⚠ No content generated for this row yet</div>`
             }
           </div>
         `).join('');
 
-        // Tap an ID to copy it into the Record ID field on the Upload tab
-        // -- handy for re-running/updating a specific row.
-        libraryList.querySelectorAll('.card-id').forEach(el => {
-          el.addEventListener('click', () => {
+        libraryList.querySelectorAll('[data-action="copy-id"]').forEach(el => {
+          el.addEventListener('click', (e) => {
+            e.stopPropagation();
             recordIdInput.value = el.textContent;
             tabUpload.click();
+          });
+        });
+
+        libraryList.querySelectorAll('[data-action="toggle"]').forEach(el => {
+          el.addEventListener('click', () => {
+            const idx = el.dataset.idx;
+            const container = document.getElementById(`fields-${idx}`);
+            const hint = libraryList.querySelector(`.card-expand-hint[data-idx="${idx}"]`);
+            const item = window._markLibraryItems[idx];
+            const isOpen = container.style.display !== 'none';
+
+            if (isOpen) {
+              container.style.display = 'none';
+              hint.textContent = 'Tap to expand ▾';
+            } else {
+              container.style.display = 'block';
+              hint.textContent = 'Tap to collapse ▴';
+              if (!container.dataset.built) {
+                container.innerHTML = buildFieldBlock('Summary', item.summary)
+                  + buildFieldBlock('X Post', item.x_post)
+                  + buildFieldBlock('Newsletter', item.newsletter);
+                container.dataset.built = 'true';
+                wireFieldButtons(container);
+              }
+            }
           });
         });
       }
@@ -476,6 +572,58 @@
 
     refreshBtn.disabled = false;
     refreshBtn.textContent = '🔄 Refresh Library';
+  }
+
+  function buildFieldBlock(label, text) {
+    if (!text || !text.trim()) return '';
+    // Store the raw text in a data attribute (base64-safe via encodeURIComponent)
+    // rather than relying on innerText later, so Copy/Share always get the
+    // exact original text even with special characters or line breaks.
+    const encoded = encodeURIComponent(text);
+    return `
+      <div class="field-block">
+        <div class="field-label">${escapeHtml(label)}</div>
+        <div class="field-text">${escapeHtml(text)}</div>
+        <div class="field-actions">
+          <div class="field-btn" data-copy="${encoded}">📋 Copy</div>
+          ${navigator.share ? `<div class="field-btn" data-share="${encoded}" data-title="${escapeHtml(label)}">📤 Share</div>` : ''}
+        </div>
+      </div>
+    `;
+  }
+
+  function wireFieldButtons(container) {
+    container.querySelectorAll('[data-copy]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const text = decodeURIComponent(btn.dataset.copy);
+        try {
+          await navigator.clipboard.writeText(text);
+          const original = btn.textContent;
+          btn.textContent = '✅ Copied';
+          btn.classList.add('copied');
+          setTimeout(() => {
+            btn.textContent = original;
+            btn.classList.remove('copied');
+          }, 1500);
+        } catch (err) {
+          alert('Copy failed: ' + err.message);
+        }
+      });
+    });
+
+    container.querySelectorAll('[data-share]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const text = decodeURIComponent(btn.dataset.share);
+        try {
+          await navigator.share({ title: btn.dataset.title, text: text });
+        } catch (err) {
+          // User cancelling the share sheet also throws -- don't alert for that.
+          if (err.name !== 'AbortError') {
+            alert('Share failed: ' + err.message);
+          }
+        }
+      });
+    });
   }
 </script>
 
