@@ -240,6 +240,26 @@
     padding: 20px;
     font-size: 0.85rem;
   }
+  .spinner {
+    display: inline-block;
+    width: 16px;
+    height: 16px;
+    border: 2px solid var(--border);
+    border-top-color: var(--green);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    margin-right: 8px;
+    vertical-align: middle;
+  }
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+  .loading-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
   .result-box {
     background: #1e1e1e;
     border-radius: 8px;
@@ -488,12 +508,36 @@
   }
 
   async function loadLibrary() {
-    libraryList.innerHTML = '<div class="loading-text">Loading...</div>';
+    // --- BUG FIX (added 2026-08-04, patched by Claude) ---
+    // WHY THIS EXISTS: the original loadLibrary() had a static "Loading..."
+    // string with no spinner and, more importantly, no timeout on the
+    // fetch() call at all. If /recent-content was slow (a large sheet,
+    // gspread being sluggish, a cold container) or the request just hung,
+    // there was zero way to tell "still working" from "silently dead" --
+    // same class of problem as the original upload button before its
+    // debug-logging pass. Fixed the same way: a live elapsed-time spinner,
+    // plus an AbortController ceiling so a hang fails visibly instead of
+    // spinning forever.
     refreshBtn.disabled = true;
     refreshBtn.textContent = 'Loading...';
 
+    const startTime = Date.now();
+    const updateSpinner = () => {
+      const secs = ((Date.now() - startTime) / 1000).toFixed(1);
+      libraryList.innerHTML = `<div class="loading-row"><span class="spinner"></span>Loading... (${secs}s)</div>`;
+    };
+    updateSpinner();
+    const spinnerTimer = setInterval(updateSpinner, 300);
+
+    const controller = new AbortController();
+    const timeoutMs = 20000; // 20s ceiling -- a sheet read should never legitimately take longer
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
     try {
-      const res = await fetch(deriveRecentContentUrl());
+      const res = await fetch(deriveRecentContentUrl(), { signal: controller.signal });
+      clearInterval(spinnerTimer);
+      clearTimeout(timeoutId);
+
       if (!res.ok) {
         libraryList.innerHTML = `<div class="loading-text">Failed to load (HTTP ${res.status}). Is /recent-content deployed yet?</div>`;
         refreshBtn.disabled = false;
@@ -567,7 +611,15 @@
         });
       }
     } catch (err) {
-      libraryList.innerHTML = `<div class="loading-text">Failed to load: ${escapeHtml(err.message)}</div>`;
+      clearInterval(spinnerTimer);
+      clearTimeout(timeoutId);
+      const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
+
+      if (err.name === 'AbortError') {
+        libraryList.innerHTML = `<div class="loading-text">Timed out after ${elapsedSec}s waiting on the server. It may be slow (cold start, large sheet) or /recent-content may not be deployed yet -- try again in a moment.</div>`;
+      } else {
+        libraryList.innerHTML = `<div class="loading-text">Failed after ${elapsedSec}s: ${escapeHtml(err.message)}</div>`;
+      }
     }
 
     refreshBtn.disabled = false;
