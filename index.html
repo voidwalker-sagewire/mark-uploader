@@ -391,7 +391,14 @@
     elapsedTimer = setInterval(updateElapsed, 500);
 
     const controller = new AbortController();
-    const timeoutMs = 120000; // 2 minutes -- generous ceiling for CPU-based Whisper transcription
+    const timeoutMs = 600000; // 10 minutes -- raised 2026-08-05 after a 2:15 video
+    // hit the old 120s ceiling. CPU-based Whisper transcription scales roughly
+    // with video length (plus upload time on top), so a fixed short ceiling
+    // will always eventually be too small once someone uploads a longer clip.
+    // 10 minutes is a rough ceiling, not a measured one -- if a legitimately
+    // long video times out at this new limit too, the real fix is showing
+    // actual server-side progress (e.g. polling a status endpoint) instead of
+    // just raising this number again forever.
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
@@ -455,7 +462,7 @@
         // response at all. This is the timeout signature: long wait,
         // then nothing. Points at a proxy/server timeout, not CORS.
         document.getElementById('txtUpload').textContent = `Timed out after ${elapsedSec}s -- no response from server`;
-        resultBox.textContent = `TIMEOUT after ${elapsedSec}s.\n\nThe request was sent but never got a response before hitting the ${timeoutMs/1000}s client-side limit. This usually means a reverse proxy (Traefik, Cloudflare, etc.) in front of the API is killing the connection before Whisper transcription finishes -- not a CORS or code problem.`;
+        resultBox.textContent = `TIMEOUT after ${elapsedSec}s.\n\nThe request was sent but never got a response before hitting this page's own ${timeoutMs/1000}s limit. Two likely causes, in order of likelihood: (1) the video is long enough that upload + CPU-based Whisper transcription genuinely takes longer than this limit -- check Coolify's mark-api logs for a [PIPELINE] line timestamped after this moment to confirm the server kept working; or (2) a reverse proxy in front of the API is killing the connection early. Not a CORS or auth problem either way.`;
       } else {
         // Fast failure (check the elapsed seconds above/below) usually
         // means CORS, DNS, a bad URL, or a TLS/cert problem -- something
