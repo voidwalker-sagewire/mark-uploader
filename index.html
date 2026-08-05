@@ -290,6 +290,9 @@
   <label for="endpoint">API Endpoint</label>
   <input type="text" id="endpoint" placeholder="https://mark.sagewire.dev/process-video" value="https://mark.sagewire.dev/process-video">
 
+  <label for="apiKey">API Key</label>
+  <input type="text" id="apiKey" placeholder="paste your MARK_API_KEY here">
+
   <label for="recordId">Record ID (optional — leave blank to create new)</label>
   <input type="text" id="recordId" placeholder="e.g. df1db859">
 
@@ -320,6 +323,7 @@
   const uploadBtn = document.getElementById('uploadBtn');
   const endpointInput = document.getElementById('endpoint');
   const recordIdInput = document.getElementById('recordId');
+  const apiKeyInput = document.getElementById('apiKey');
   const log = document.getElementById('log');
   const resultBox = document.getElementById('resultBox');
 
@@ -345,6 +349,10 @@
     const endpoint = endpointInput.value.trim();
     if (!endpoint) {
       alert('Enter the API endpoint first (ask Claude/check your Coolify deployment for the public URL).');
+      return;
+    }
+    if (!apiKeyInput.value.trim()) {
+      alert('Enter the API key first -- it\'s the MARK_API_KEY value set in Coolify. Without it every request gets rejected with a 401.');
       return;
     }
     if (!selectedFile) return;
@@ -392,6 +400,7 @@
 
       const res = await fetch(endpoint, {
         method: 'POST',
+        headers: { 'X-API-Key': apiKeyInput.value.trim() },
         body: formData,
         signal: controller.signal
       });
@@ -534,7 +543,10 @@
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
-      const res = await fetch(deriveRecentContentUrl(), { signal: controller.signal });
+      const res = await fetch(deriveRecentContentUrl(), {
+        signal: controller.signal,
+        headers: { 'X-API-Key': apiKeyInput.value.trim() }
+      });
       clearInterval(spinnerTimer);
       clearTimeout(timeoutId);
 
